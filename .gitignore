@@ -1,0 +1,11 @@
+# 데이터 원본은 용량이 커서 올리지 않음 (받는 방법은 README 참고)
+data/*.h5
+# 결과는 요약(summary)만 올림. 모델 가중치와 이미지별 예측은 용량이 커서 제외
+results/**
+!results/**/
+!results/**/summary/
+!results/**/summary/**
+.venv/
+__pycache__/
+*.pyc
+.DS_Store
