@@ -45,7 +45,7 @@ class QuantTest(unittest.TestCase):
             self.assertTrue(torch.equal(out[t].argmax(1), expected[t].argmax(1)))
 
     def test_weight_levels_and_error(self):
-        for bits, q_max in zip(BITS, (7, 31, 127)):
+        for bits, q_max in zip(BITS, (7, 15, 31, 127)):
             for i, w in enumerate(self.net.weights):
                 s, q = self.table.w[bits][i]
                 self.assertEqual(q, q_max)
