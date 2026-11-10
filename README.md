@@ -61,7 +61,7 @@ src/
     qmodel.py     folding된 모델 + 층별 on/off, calibration
   exp_6conv.py    본 실험
   exp_extra.py    조건 추가 (W5A5 등)
-  analyze.py      집계 (순위 상관, mixed precision)
+  analyze.py      집계 (순위 상관, mixed precision, Pareto)
 tests/            단위 테스트
 docs/             실험 규격
 results/          summary만 올림 (모델, 이미지별 예측은 제외)
@@ -124,20 +124,30 @@ W4A4에서 층별로 본 것 (rank 1만 장, seed 평균)
 - seed마다 편차가 커서 층 사이의 작은 차이는 해석하기 어려움
 - BN folding은 결과에 거의 영향이 없었음. 11/9 예비 실험(folding 없음)이랑 수치가 거의 같음
 
-Mixed precision 비교 기준(Weight Bit Cost)은 아직 못 정했다. 평균 비트 예산으로 자르면 Conv5, 6이 너무 커서 정책끼리 차이가 안 남. mixed.csv에 예산 방식이랑 top-k 방식 둘 다 넣어놨음.
+Mixed precision은 두 가지로 나눠서 봄 (서로 다른 실험)
 
-예비 실험 집계는 results/prelim_1109_nofold/에 따로 있음.
+1. 상위 k개 층만 8비트 (어떤 지표가 중요한 층을 잘 찾는지). test 정확도(%)
 
-## 브랜치
+| 층 고르는 기준 | k=1 | k=2 | k=3 |
+|---|---|---|---|
+| 복원 이득 순위 | 76.2 | 90.7 | 95.1 |
+| 누적 NMSE 순위 | 58.1 | 62.8 | 77.6 |
+| 앞층부터 | 74.0 | 83.0 | 94.9 |
+| 무작위 평균 | 67.4 | 75.5 | 84.3 |
 
-- main : 검증된 코드만
-- feature/6conv, feature/imagenet, feature/quantization, feature/experiments, feature/analysis
+2. 같은 저장 비용에서 비교 (B = 층별 가중치 수 x 비트의 합). 64조합의 Pareto frontier, rank로 고르고 test로 평가
 
-main에 바로 push하지 말고 기능별 브랜치에서 작업한 다음 PR로 합친다. 설정을 바꾸면 docs/experiment_spec.md도 같이 고치기.
+| 조합 (Conv1~6 비트) | 평균 비트 | test 정확도(%) |
+|---|---|---|
+| 444444 | 4.00 | 58.31 ± 13.16 |
+| 844444 | 4.02 | 73.98 ± 11.06 |
+| 884444 | 4.15 | 82.99 ± 8.30 |
+| 888444 | 4.41 | 94.89 ± 3.30 |
+| 884844 | 4.67 | 95.03 ± 3.60 |
+| 888844 | 4.92 | 98.67 ± 2.70 |
+| 884884 | 5.69 | 98.94 ± 1.27 |
+| 888884 | 5.95 | 100.00 |
 
-## 참고
-
-- Burgess, Kim. 3D Shapes Dataset, 2018
-- Yuan et al. PTQ4ViT, ECCV 2022
-- Lin et al. FQ-ViT, IJCAI 2022
-- Dong et al. HAWQ, ICCV 2019
+- frontier가 거의 "앞 층부터 8비트"임. 앞 층은 가중치 수가 적어서 싸고, 복원 이득도 커서 그런 것
+- 그래서 비트 예산을 평균 5, 6으로 맞추면 어떤 순위를 쓰든 같은 조합(888844, 888884)이 나옴. 점수를 비용으로 나눠서 골라도 마찬가지
+- 예산 7에서는 NMSE 순위만 Conv6을 먼저 골라서 100%가 안 됨 (98.9%)
