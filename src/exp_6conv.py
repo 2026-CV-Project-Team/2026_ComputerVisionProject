@@ -103,7 +103,7 @@ def predict(net, x: torch.Tensor, y: dict, device, batch_size: int = 1024, prep=
 
 
 @torch.no_grad()
-def layer_nmse(net: FoldedSixConv, table: QuantTable, w_bits, a_bits, x, device) -> list[float]:
+def layer_nmse(net: FoldedSixConv, table: QuantTable, w_bits, a_bits, x, device, prep=to_float) -> list[float]:
     """층별 출력의 ‖y − ŷ‖² / ‖y‖². 이미지별로 계산한 뒤 평균.
 
     기준 y는 전 층 FP32의 같은 위치 출력이다. 따라서
@@ -113,7 +113,7 @@ def layer_nmse(net: FoldedSixConv, table: QuantTable, w_bits, a_bits, x, device)
     totals = torch.zeros(N_LAYERS)
     off = [None] * N_LAYERS
     for i, j in batches(len(x), 512):
-        batch = to_float(x[i:j]).to(device)
+        batch = prep(x[i:j]).to(device)
         table.apply(net, off, off)
         net.capture = []
         net(batch)

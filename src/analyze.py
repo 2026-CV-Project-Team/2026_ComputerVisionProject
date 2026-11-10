@@ -14,6 +14,8 @@
 - mixed.csv:      Mixed-Precision 정책별 test 정답률과 Weight Bit Cost
 - mixed_all.csv:  64조합 전체의 test 정답률과 Weight Bit Cost
 - pareto.csv:     64조합의 정확도-저장 비용 Pareto frontier
+- domain_conditions.csv, domain_layers.csv, domain_rank_corr.csv:
+                  도메인 실험(exp_domain.py)을 돌린 경우에만 생성
 
 Mixed-Precision 비교는 목적이 다른 두 방식을 모두 유지한다(이하형 문서 11-10 2차). 서로 다른
 실험이므로 결과를 섞어 해석하지 않는다.
@@ -262,6 +264,46 @@ def pareto(metrics: pd.DataFrame) -> pd.DataFrame:
     return out[["scope", "bits", "total_bits", "weight_bit_cost", "rank_acc", "test_acc", "test_sd"]]
 
 
+def domain_tables(exp: Path):
+    """도메인별 조건 정답률, W4A4 층별 효과, 순위 상관. 도메인 실험 결과가 없으면 None.
+
+    순위 상관은 두 가지를 본다.
+    - nmse_all vs gain_pp: 그 도메인 안에서 누적 NMSE 순위와 복원 이득 순위가 맞는지
+    - gain_pp(orig) vs gain_pp(도메인): 입력이 바뀌어도 복원 이득 순위가 유지되는지
+    """
+    dirs = sorted(d for d in exp.glob("seed*") if (d / "domain_metrics.csv").exists())
+    if not dirs:
+        return None
+    metrics = pd.concat(pd.read_csv(d / "domain_metrics.csv") for d in dirs)
+    nmse = pd.concat(pd.read_csv(d / "domain_nmse.csv") for d in dirs)
+    keys = ["domain", "seed", "set", "condition", "state"]
+    mean = metrics.groupby(keys, as_index=False)[["acc", "margin", "margin_drop", "c2w", "w2c"]].mean()
+    metrics = pd.concat([metrics, mean.assign(task=AVG)], ignore_index=True)
+
+    cond = metrics[(metrics.state == "all") & (metrics.set == "test")]
+    layers = []
+    for domain, m in metrics.groupby("domain", sort=False):
+        # layer_table은 조건마다 restore/only 상태가 있어야 하므로 층별 상태를 돌린 W4A4만 넘긴다
+        m = m[m.condition.isin(["FP32", "W4A4"])].drop(columns="domain")
+        n = nmse[nmse.domain == domain].drop(columns="domain")
+        layers.append(layer_table(m, n).assign(domain=domain))
+    layers = pd.concat(layers, ignore_index=True)
+
+    rows = []
+    avg = layers[layers.task == AVG]
+    for (seed, domain), g in avg.groupby(["seed", "domain"], sort=False):
+        g = g.sort_values("layer")
+        base = avg[(avg.seed == seed) & (avg.domain == "orig")].sort_values("layer")
+        rows.append({
+            "seed": seed, "domain": domain,
+            "rho_nmse_gain": spearmanr(g.nmse_all, g.gain_pp).statistic,
+            "top1_nmse_gain": overlap(g.nmse_all.to_numpy(), g.gain_pp.to_numpy(), 1),
+            "rho_gain_vs_orig": spearmanr(base.gain_pp, g.gain_pp).statistic,
+            "top1_gain_vs_orig": overlap(base.gain_pp.to_numpy(), g.gain_pp.to_numpy(), 1),
+        })
+    return cond, layers, pd.DataFrame(rows)
+
+
 def mixed_all(metrics: pd.DataFrame) -> pd.DataFrame:
     mix = metrics[(metrics.condition == "MIX") & (metrics.set == "test")].copy()
     mix["bits"] = mix.state.str.replace("mix_", "")
@@ -308,6 +350,23 @@ def main() -> None:
     print("\nMixed-Precision: test 정답률(%, 세 과제 평균)과 Weight Bit Cost(평균 비트)")
     print(mix.groupby(["rule", "policy"], sort=False).agg(
         acc=("test_acc", "mean"), sd=("test_acc", "std"), cost=("weight_bit_cost", "mean")).round(2))
+
+    domain = domain_tables(args.exp)
+    if domain is not None:
+        d_cond, d_layers, d_corr = domain
+        d_cond.to_csv(out / "domain_conditions.csv", index=False)
+        d_layers.to_csv(out / "domain_layers.csv", index=False)
+        d_corr.to_csv(out / "domain_rank_corr.csv", index=False)
+        view = d_cond[d_cond.task == AVG]
+        print("\n도메인별 test 정답률(%, 세 과제 평균, seed 평균)")
+        print(view.pivot_table(index="domain", columns="condition", values="acc", sort=False).round(2))
+        print("\n도메인별 test 정답률 seed 표준편차")
+        print(view.pivot_table(index="domain", columns="condition", values="acc", aggfunc="std", sort=False).round(2))
+        print("\n도메인별 W4A4 복원 이득(%p, rank 묶음, seed 평균)")
+        sub = d_layers[d_layers.task == AVG]
+        print(sub.pivot_table(index="domain", columns="layer", values="gain_pp", sort=False).round(2))
+        print("\n도메인별 순위 상관(seed 평균)")
+        print(d_corr.groupby("domain", sort=False).mean(numeric_only=True).drop(columns="seed").round(2))
 
     front = pareto(metrics)
     front.to_csv(out / "pareto.csv", index=False)
