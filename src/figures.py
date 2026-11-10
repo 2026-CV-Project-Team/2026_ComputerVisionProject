@@ -14,6 +14,8 @@
 - 축은 하나만 쓴다. 단위가 다른 값(NMSE, %p)은 한 축에 겹치지 않고 칸을 나눈다.
 - seed 편차가 커서 평균만 그리지 않고 seed별 점을 함께 찍는다.
 - 글자는 영어. 한글 글꼴이 없는 환경에서도 깨지지 않게 하려는 것이다.
+- fig5의 3D 막대는 음수를 그릴 수 없어 음수 복원 이득(Conv6, 최대 -0.7%p)을 0으로 그린다.
+  정확한 값은 fig2나 domain_layers.csv를 볼 것.
 """
 from __future__ import annotations
 
@@ -37,7 +39,8 @@ DOMAIN_NAMES = {"orig": "Original", "bg": "Background\nswap", "noise_0.01": "Noi
                 "noise_0.03": "Noise\nσ=0.03", "blur_0.5": "Blur\nσ=0.5", "blur_1.0": "Blur\nσ=1.0"}
 
 plt.rcParams.update({
-    "font.family": "Helvetica", "font.size": 8, "axes.titlesize": 8.5, "axes.labelsize": 8,
+    "font.family": "sans-serif", "font.sans-serif": ["Helvetica", "Arial", "DejaVu Sans"],
+    "axes.unicode_minus": True, "font.size": 8, "axes.titlesize": 8.5, "axes.labelsize": 8,
     "xtick.labelsize": 7.5, "ytick.labelsize": 7.5, "legend.fontsize": 7.5,
     "axes.edgecolor": MUTED, "axes.labelcolor": INK, "xtick.color": MUTED, "ytick.color": MUTED,
     "axes.spines.top": False, "axes.spines.right": False, "axes.linewidth": 0.6,
@@ -141,12 +144,12 @@ def fig2_layers(summary: Path, out: Path) -> None:
     ax.invert_yaxis()
     ax.set_aspect("equal")
     ax.grid(False)
-    ax.set_xlabel("rank by error")
+    ax.set_xlabel("rank by cumulative error")
     ax.set_ylabel("rank by restoration gain")
     sig = int((rho.rho.abs() >= 0.886).sum())
-    ax.set_xlabel("rank by error")
+    ax.set_xlabel("rank by cumulative error")
     # 유의한 seed 수(|ρ| ≥ 0.886)는 그림 설명에 적는다. 현재 5개 중 sig개
-    panel(ax, "d", f"Ranks disagree (ρ = {rho.rho.mean():.2f})")
+    panel(ax, "d", f"Ranks disagree (mean ρ = {rho.rho.mean():.2f})".replace("-", "\u2212"))
     fig.tight_layout(w_pad=1.2)
     save(fig, out, "fig2_layers")
 
@@ -165,19 +168,21 @@ def fig3_pareto(summary: Path, out: Path) -> None:
                linewidth=0.6, zorder=3, label="Conv6 raised to 8 bits")
     ax.step(front.weight_bit_cost, front.test_acc, where="post", color=INK, linewidth=1.2, zorder=2,
             label="Pareto frontier (chosen on rank set)")
-    # frontier 조합 이름. 서로 겹치지 않게 번갈아 위치를 준다
-    place = {"444444": (8, -3), "844444": (8, -3), "884444": (-8, 3), "888444": (-8, 3), "884844": (0, -12),
-             "888844": (-4, 7), "884884": (0, -12), "888884": (-4, 7)}
+    # frontier 조합 이름. 점이 몰린 곳은 이름표를 빈 곳에 두고 가는 선으로 잇는다.
+    # 값은 (가로, 세로) 오프셋(pt). 세 번째 값이 True면 선을 그린다
+    place = {"444444": (8, -3, False), "844444": (8, -3, False), "884444": (-8, 3, False),
+             "888444": (-8, 3, False), "884844": (-38, 20, True), "888844": (-4, 7, False),
+             "884884": (-8, 9, False), "888884": (7, 5, False)}
     for row in front.itertuples():
-        dx, dy = place.get(row.bits, (5, 4))
+        dx, dy, line = place.get(row.bits, (5, 4, False))
         ax.annotate(row.bits, (row.weight_bit_cost, row.test_acc), textcoords="offset points", xytext=(dx, dy),
-                    fontsize=6.8, color=INK, ha="left" if dx > 0 else ("right" if dx < 0 else "center"),
+                    fontsize=6.8, color=INK, ha="left" if dx > 0 else "right", zorder=4,
                     bbox={"boxstyle": "round,pad=0.15", "facecolor": "white", "edgecolor": "none", "alpha": 0.9},
-                    zorder=4)
+                    arrowprops={"arrowstyle": "-", "color": MUTED, "linewidth": 0.5, "shrinkB": 3} if line else None)
     ax.set_xlabel("average weight bit-width  (Σ Nᵢbᵢ / Σ Nᵢ)")
     ax.set_ylabel("top-1 accuracy on test set (%)")
     ax.set_xlim(3.6, 8.15)
-    ax.set_ylim(52, 103)
+    ax.set_ylim(52, 105)
     # 점이 그림 전체에 퍼져 있어서 범례는 그림 아래에 둔다
     ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.17), ncol=3, columnspacing=1.2, handletextpad=0.4)
     ax.set_title("All 64 mixed-precision assignments (4 or 8 bits per layer), mean of 5 seeds", loc="left", color=INK)
@@ -237,7 +242,8 @@ def fig5_gain3d(summary: Path, out: Path) -> None:
         axis.pane.set_facecolor("white")
         axis.pane.set_edgecolor(GRID)
         axis._axinfo["grid"].update(color=GRID, linewidth=0.5)
-    ax.set_title("W4A4: accuracy regained by restoring one layer to FP32", color=INK, y=0.98)
+    ax.set_title("W4A4: accuracy regained by restoring one layer to FP32\n(negative gains drawn as 0)",
+                 color=INK, y=0.97)
     fig.savefig(out / "fig5_gain3d.pdf", bbox_inches=None)
     fig.savefig(out / "fig5_gain3d.png", bbox_inches=None)
     plt.close(fig)
