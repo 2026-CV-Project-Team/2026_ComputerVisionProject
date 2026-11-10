@@ -26,6 +26,9 @@ pip install -r requirements.txt
 | `src/data.py` | 3D-Shapes 읽기, 모든 seed 공통 분할 |
 | `src/models.py` | 6-Conv Multi-Head CNN |
 | `src/train.py` | FP32 학습 |
+| `src/quant/fold.py` | Conv-BN folding |
+| `src/quant/quantizer.py` | 모의 양자화 규칙 (W 대칭 per-channel, A 비대칭 per-tensor) |
+| `src/quant/qmodel.py` | folding된 6-Conv, 층 단위 양자화 토글, 보정 |
 
 ## 실행
 
