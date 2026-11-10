@@ -30,12 +30,14 @@ pip install -r requirements.txt
 | `src/quant/quantizer.py` | 모의 양자화 규칙 (W 대칭 per-channel, A 비대칭 per-tensor) |
 | `src/quant/qmodel.py` | folding된 6-Conv, 층 단위 양자화 토글, 보정 |
 | `src/exp_6conv.py` | 본 실험: 단독 양자화, 개별 복원, Mixed-Precision 64조합, NMSE |
+| `src/analyze.py` | 집계: 순위 상관, Mixed-Precision 비교 |
 
 ## 실행
 
 ```bash
 python -m src.train --seed 0
 python -m src.exp_6conv --seeds 0 1 2 3 4   # 완료된 seed는 건너뜀
+python -m src.analyze --exp results/6conv_fold
 python -m unittest discover -s tests -t .
 ```
 
