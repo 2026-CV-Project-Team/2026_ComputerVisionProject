@@ -13,11 +13,18 @@
 - rank_corr.csv:  seed·조건·과제별 Spearman ρ, top-1/top-2 겹침
 - mixed.csv:      Mixed-Precision 정책별 test 정답률과 Weight Bit Cost
 - mixed_all.csv:  64조합 전체의 test 정답률과 Weight Bit Cost
+- pareto.csv:     64조합의 정확도-저장 비용 Pareto frontier
 
-Mixed-Precision 비교 기준은 아직 팀에서 확정하지 않았다(잠정). 두 방식을 모두 계산한다.
-- budget: 평균 가중치 비트 예산 안에서 순위대로 8비트로 올림.
-          Conv5·6이 가중치의 77%라 예산이 작으면 모든 정책이 같은 조합을 고르는 문제가 있다.
-- top-k:  순위 상위 k개 층만 8비트. 정책마다 비용이 달라지므로 Weight Bit Cost를 함께 적는다.
+Mixed-Precision 비교는 목적이 다른 두 방식을 모두 유지한다(이하형 문서 11-10 2차). 서로 다른
+실험이므로 결과를 섞어 해석하지 않는다.
+- top-k:  순위 상위 k개 층만 8비트. 층 개수를 통제해 "어떤 지표가 중요한 층을 잘 찾는가"를 본다.
+          정책마다 저장 비용이 달라지므로 Weight Bit Cost를 함께 적는다.
+- budget: 같은 Weight Bit Cost 예산 안에서 고름. "메모리 절약 대비 정확도"를 본다.
+          Conv5·6이 가중치의 77%라, 순위대로만 올리면 정책들이 같은 조합을 고르는 문제가 있다.
+          그래서 점수를 추가 비트 비용으로 나눈 값(비용 대비)으로 고르는 정책도 함께 계산한다.
+- pareto: 64조합을 실제 저장 비용 B = Σ N_i·b_i 로 정렬해 frontier를 구한다.
+          frontier는 rank 묶음에서 고르고, test 묶음에서는 고른 조합만 평가한다.
+          test를 보고 좋은 조합을 고르면 최종 수치가 낙관적으로 나오기 때문이다.
 
 사용 예:
     python -m src.analyze --exp results/6conv_fold
@@ -145,6 +152,11 @@ def bit_cost(bits) -> float:
     return float((np.array(bits) * PARAMS).sum() / PARAMS.sum())
 
 
+def total_bits(bits) -> int:
+    """실제 저장 비용 B = Σ N_i · b_i (비트). N_i는 층 i의 가중치 수, b_i는 할당 비트."""
+    return int((np.array(bits) * PARAMS).sum())
+
+
 def greedy(order: np.ndarray, budget: float) -> tuple[int, ...]:
     """순위대로 보면서 예산이 허용하는 층만 8비트로 올림."""
     bits = np.full(N_LAYERS, 4)
@@ -195,6 +207,12 @@ def mixed(metrics: pd.DataFrame, table: pd.DataFrame) -> pd.DataFrame:
             options = [b for b in combos if bit_cost(b) <= budget]
             for name, order in orders.items():
                 add(seed, rule, name, greedy(order, budget))
+            # 비용 대비: 점수 / (그 층을 8비트로 올릴 때 늘어나는 비트 수). 층 크기가 달라서
+            # 점수 순서대로만 고르면 큰 층 하나가 예산을 다 써버릴 수 있다
+            for name, score in scores.items():
+                if name != "앞층부터":
+                    order = np.argsort(-score / (PARAMS * 4), kind="stable")
+                    add(seed, rule, f"{name} (비용 대비)", greedy(order, budget))
             accs = np.array([test[(seed, mix_name(b))] for b in options])
             rows.append({"seed": seed, "rule": rule, "policy": "가능 조합 평균", "bits": f"{len(options)}개",
                          "weight_bit_cost": np.mean([bit_cost(b) for b in options]), "test_acc": accs.mean()})
@@ -211,11 +229,45 @@ def mixed(metrics: pd.DataFrame, table: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def frontier(cost: np.ndarray, acc: np.ndarray) -> np.ndarray:
+    """지배당하지 않는 점의 마스크. 비용이 같거나 작으면서 정답률이 같거나 높은 다른 점이
+    있고 둘 중 하나라도 엄격히 더 좋으면 지배당한 것이다."""
+    keep = np.ones(len(cost), dtype=bool)
+    for i in range(len(cost)):
+        better = (cost <= cost[i]) & (acc >= acc[i]) & ((cost < cost[i]) | (acc > acc[i]))
+        keep[i] = not better.any()
+    return keep
+
+
+def pareto(metrics: pd.DataFrame) -> pd.DataFrame:
+    """64조합의 정확도-저장 비용 frontier. 세 과제 평균 정답률 기준.
+
+    scope가 seed 번호면 그 모델 하나의 frontier, 'mean'이면 seed 평균 정답률로 구한 frontier다.
+    선택은 rank_acc로만 하고 test_acc는 선택된 조합의 값을 옮겨 적기만 한다.
+    """
+    mix = metrics[(metrics.condition == "MIX") & (metrics.task == AVG)]
+    wide = mix.pivot_table(index=["seed", "state"], columns="set", values="acc").reset_index()
+    wide["bits"] = wide.state.str.replace("mix_", "")
+    wide["total_bits"] = [total_bits([int(c) for c in b]) for b in wide.bits]
+    wide["weight_bit_cost"] = [bit_cost([int(c) for c in b]) for b in wide.bits]
+    parts = []
+    for seed, g in wide.groupby("seed"):
+        g = g[frontier(g.total_bits.to_numpy(), g["rank"].to_numpy())]
+        parts.append(g.assign(scope=str(seed), test_sd=np.nan))
+    avg = wide.groupby(["bits", "total_bits", "weight_bit_cost"], as_index=False).agg(
+        rank=("rank", "mean"), test_sd=("test", "std"), test=("test", "mean"))
+    parts.append(avg[frontier(avg.total_bits.to_numpy(), avg["rank"].to_numpy())].assign(scope="mean"))
+    out = pd.concat(parts, ignore_index=True).rename(columns={"rank": "rank_acc", "test": "test_acc"})
+    out = out.sort_values(["scope", "total_bits"])
+    return out[["scope", "bits", "total_bits", "weight_bit_cost", "rank_acc", "test_acc", "test_sd"]]
+
+
 def mixed_all(metrics: pd.DataFrame) -> pd.DataFrame:
     mix = metrics[(metrics.condition == "MIX") & (metrics.set == "test")].copy()
     mix["bits"] = mix.state.str.replace("mix_", "")
     mix["weight_bit_cost"] = [bit_cost([int(c) for c in b]) for b in mix.bits]
-    return mix[["seed", "bits", "weight_bit_cost", "task", "acc", "c2w", "w2c"]]
+    mix["total_bits"] = [total_bits([int(c) for c in b]) for b in mix.bits]
+    return mix[["seed", "bits", "weight_bit_cost", "total_bits", "task", "acc", "c2w", "w2c"]]
 
 
 def main() -> None:
@@ -256,6 +308,11 @@ def main() -> None:
     print("\nMixed-Precision: test 정답률(%, 세 과제 평균)과 Weight Bit Cost(평균 비트)")
     print(mix.groupby(["rule", "policy"], sort=False).agg(
         acc=("test_acc", "mean"), sd=("test_acc", "std"), cost=("weight_bit_cost", "mean")).round(2))
+
+    front = pareto(metrics)
+    front.to_csv(out / "pareto.csv", index=False)
+    print("\nPareto frontier (seed 평균 기준, rank에서 선택하고 test로 평가)")
+    print(front[front.scope == "mean"].round(2).to_string(index=False))
 
 
 if __name__ == "__main__":

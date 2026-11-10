@@ -1,7 +1,9 @@
 import unittest
 
+import numpy as np
 import torch
 
+from src.analyze import PARAMS, frontier, total_bits
 from src.exp_6conv import CONDITIONS, build_states, check_folding, condition_states, layer_nmse
 from src.exp_extra import parse_condition
 from src.models import N_LAYERS, SixConv
@@ -29,6 +31,14 @@ class ExpTest(unittest.TestCase):
         states = condition_states("W5A5", 5, 5)
         self.assertEqual(len(states), 1 + 2 * N_LAYERS)
         self.assertEqual(states[1], ("W5A5", "restore_1", [None, 5, 5, 5, 5, 5], [None, 5, 5, 5, 5, 5]))
+
+    def test_pareto(self):
+        self.assertEqual(PARAMS.tolist(), [432, 2304, 4608, 9216, 18432, 36864])
+        self.assertEqual(total_bits([4] * 6), 4 * 71856)
+        self.assertEqual(total_bits([8, 4, 4, 4, 4, 4]), 4 * 71856 + 4 * 432)
+        # 점 2는 점 1보다 비싸면서 정답률이 낮아 지배당한다. 점 3은 가장 비싸지만 정답률이 가장 높다
+        keep = frontier(np.array([10, 20, 30, 40]), np.array([50.0, 80.0, 70.0, 90.0]))
+        self.assertEqual(keep.tolist(), [True, True, False, True])
 
     def test_nmse_zero_when_off_and_fold_check(self):
         torch.manual_seed(0)
