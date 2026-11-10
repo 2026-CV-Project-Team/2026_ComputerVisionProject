@@ -56,18 +56,24 @@ CONDITIONS = {
 MIX_BITS = (4, 8)  # Mixed-Precision에서 층마다 고르는 비트
 
 
+def condition_states(cond: str, w, a) -> list[tuple[str, str, list, list]]:
+    """조건 하나의 상태 13개(all, restore_1~6, only_1~6)."""
+    states = [(cond, "all", [w] * N_LAYERS, [a] * N_LAYERS)]
+    for i in range(N_LAYERS):
+        w_r, a_r = [w] * N_LAYERS, [a] * N_LAYERS
+        w_r[i], a_r[i] = None, None  # 층 i의 W와 A를 함께 FP32로 복원
+        states.append((cond, f"restore_{i + 1}", w_r, a_r))
+        w_o, a_o = [None] * N_LAYERS, [None] * N_LAYERS
+        w_o[i], a_o[i] = w, a  # 층 i만 양자화
+        states.append((cond, f"only_{i + 1}", w_o, a_o))
+    return states
+
+
 def build_states() -> list[tuple[str, str, list, list]]:
     """평가할 모든 상태를 (조건, 상태 이름, 층별 W 비트, 층별 A 비트)로 나열."""
     states = [("FP32", "all", [None] * N_LAYERS, [None] * N_LAYERS)]
     for cond, (w, a) in CONDITIONS.items():
-        states.append((cond, "all", [w] * N_LAYERS, [a] * N_LAYERS))
-        for i in range(N_LAYERS):
-            w_r, a_r = [w] * N_LAYERS, [a] * N_LAYERS
-            w_r[i], a_r[i] = None, None  # 층 i의 W와 A를 함께 FP32로 복원
-            states.append((cond, f"restore_{i + 1}", w_r, a_r))
-            w_o, a_o = [None] * N_LAYERS, [None] * N_LAYERS
-            w_o[i], a_o[i] = w, a  # 층 i만 양자화
-            states.append((cond, f"only_{i + 1}", w_o, a_o))
+        states += condition_states(cond, w, a)
     for mask in range(2**N_LAYERS):
         bits = [MIX_BITS[mask >> i & 1] for i in range(N_LAYERS)]
         states.append(("MIX", "mix_" + "".join(map(str, bits)), bits, bits))
@@ -75,16 +81,17 @@ def build_states() -> list[tuple[str, str, list, list]]:
 
 
 @torch.no_grad()
-def predict(net, x: torch.Tensor, y: dict, device, batch_size: int = 1024):
+def predict(net, x: torch.Tensor, y: dict, device, batch_size: int = 1024, prep=to_float):
     """과제별 예측 클래스와 logit margin(정답 logit − 나머지 중 최대 logit).
 
     margin은 정답률이 변하지 않는 조건에서도 예측이 얼마나 흔들렸는지 보여준다.
+    prep은 배치를 모델 입력으로 바꾸는 함수다. 기본은 uint8 -> [-0.5, 0.5].
     """
     n = len(x)
     pred = {t: np.empty(n, dtype=np.uint8) for t in TASKS}
     margin = {t: np.empty(n, dtype=np.float32) for t in TASKS}
     for i, j in batches(n, batch_size):
-        out = net(to_float(x[i:j]).to(device))
+        out = net(prep(x[i:j]).to(device))
         for t in TASKS:
             target = y[t][i:j].to(device)
             logits = out[t]
@@ -142,6 +149,68 @@ def write_csv(path: Path, rows: list[dict]) -> None:
         writer.writerows(rows)
 
 
+def eval_set(data, labels):
+    """rank와 test를 이어 붙인 평가 입력, 정답, 묶음별 마스크."""
+    x_eval = torch.cat([data["rank"], data["test"]])
+    y_eval = {t: torch.cat([labels["rank"][t], labels["test"][t]]) for t in TASKS}
+    n_rank = len(data["rank"])
+    at = np.arange(len(x_eval))
+    return x_eval, y_eval, {"rank": at < n_rank, "test": at >= n_rank}
+
+
+def evaluate(net, table, states, x_eval, y_eval, masks, seed, device, prep=to_float, log=None):
+    """상태 목록을 평가해 (집계 행, 이미지별 예측)을 반환.
+
+    C→W, W→C는 같은 입력에 대한 FP32 예측과 비교한다. 입력이 바뀌는 실험(도메인)에서도
+    그 입력의 FP32 결과가 기준이 되므로, 입력 변화의 영향과 양자화의 영향이 섞이지 않는다.
+    """
+    off = [None] * N_LAYERS
+    y_np = {t: y_eval[t].numpy() for t in TASKS}
+    table.apply(net, off, off)
+    base_pred, base_margin = predict(net, x_eval, y_eval, device, prep=prep)
+    if log:
+        log("FP32 " + str({t: round(float((base_pred[t] == y_np[t]).mean() * 100), 3) for t in TASKS}))
+
+    per_image: dict[str, np.ndarray] = {}
+    rows = []
+    for k, (cond, state, w_bits, a_bits) in enumerate(states):
+        table.apply(net, w_bits, a_bits)
+        pred, margin = predict(net, x_eval, y_eval, device, prep=prep)
+        for t in TASKS:
+            per_image[f"{cond}|{state}|{t}|pred"] = pred[t]
+            per_image[f"{cond}|{state}|{t}|margin"] = margin[t].astype(np.float16)
+            ok = pred[t] == y_np[t]
+            base_ok = base_pred[t] == y_np[t]
+            for set_name, mask in masks.items():
+                rows.append(
+                    {
+                        "seed": seed,
+                        "set": set_name,
+                        "condition": cond,
+                        "state": state,
+                        "task": t,
+                        "acc": float(ok[mask].mean() * 100),
+                        "c2w": int((base_ok & ~ok)[mask].sum()),  # FP32 정답 -> 양자화 후 오답
+                        "w2c": int((~base_ok & ok)[mask].sum()),  # FP32 오답 -> 양자화 후 정답
+                        "margin": float(margin[t][mask].mean()),
+                        "margin_drop": float((base_margin[t] - margin[t])[mask].mean()),
+                    }
+                )
+        if log and k % 20 == 0:
+            log(f"상태 {k + 1}/{len(states)}")
+    table.apply(net, off, off)
+    return rows, per_image
+
+
+def load_seed(seed_dir: Path, device) -> tuple[FoldedSixConv, QuantTable]:
+    """완료된 seed의 학습 가중치와 보정 범위를 불러온다. 재학습·재보정 없이 조건만 추가할 때 사용."""
+    orig = SixConv()
+    orig.load_state_dict(torch.load(seed_dir / "model.pt", map_location="cpu"))
+    net = FoldedSixConv(orig.to(device).eval()).to(device).eval()
+    ranges = [torch.tensor(r, device=device) for r in json.loads((seed_dir / "ranges.json").read_text())]
+    return net, QuantTable(net, ranges)
+
+
 def run_seed(seed: int, args, data, labels, device) -> None:
     seed_dir = args.out / f"seed{seed}"
     if (seed_dir / "DONE").exists():
@@ -174,44 +243,8 @@ def run_seed(seed: int, args, data, labels, device) -> None:
 
     # 4. 상태별 평가. rank와 test를 이어 붙여 한 번에 돌리고 집계만 나눈다
     states = build_states()
-    off = [None] * N_LAYERS
-    x_eval = torch.cat([data["rank"], data["test"]])
-    y_eval = {t: torch.cat([labels["rank"][t], labels["test"][t]]) for t in TASKS}
-    n_rank = len(data["rank"])
-    masks = {"rank": np.arange(len(x_eval)) < n_rank, "test": np.arange(len(x_eval)) >= n_rank}
-    y_np = {t: y_eval[t].numpy() for t in TASKS}
-
-    table.apply(net, off, off)
-    base_pred, base_margin = predict(net, x_eval, y_eval, device)
-    log("FP32 " + str({t: round(float((base_pred[t] == y_np[t]).mean() * 100), 3) for t in TASKS}))
-
-    per_image: dict[str, np.ndarray] = {}
-    rows = []
-    for k, (cond, state, w_bits, a_bits) in enumerate(states):
-        table.apply(net, w_bits, a_bits)
-        pred, margin = predict(net, x_eval, y_eval, device)
-        for t in TASKS:
-            per_image[f"{cond}|{state}|{t}|pred"] = pred[t]
-            per_image[f"{cond}|{state}|{t}|margin"] = margin[t].astype(np.float16)
-            ok = pred[t] == y_np[t]
-            base_ok = base_pred[t] == y_np[t]
-            for set_name, mask in masks.items():
-                rows.append(
-                    {
-                        "seed": seed,
-                        "set": set_name,
-                        "condition": cond,
-                        "state": state,
-                        "task": t,
-                        "acc": float(ok[mask].mean() * 100),
-                        "c2w": int((base_ok & ~ok)[mask].sum()),  # FP32 정답 -> 양자화 후 오답
-                        "w2c": int((~base_ok & ok)[mask].sum()),  # FP32 오답 -> 양자화 후 정답
-                        "margin": float(margin[t][mask].mean()),
-                        "margin_drop": float((base_margin[t] - margin[t])[mask].mean()),
-                    }
-                )
-        if k % 20 == 0:
-            log(f"상태 {k + 1}/{len(states)}")
+    x_eval, y_eval, masks = eval_set(data, labels)
+    rows, per_image = evaluate(net, table, states, x_eval, y_eval, masks, seed, device, log=log)
 
     # 같은 설정에 이르는 두 경로(조건 all, MIX 조합)가 같은 결과인지 확인
     for t in TASKS:

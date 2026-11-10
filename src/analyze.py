@@ -47,8 +47,12 @@ def load(exp: Path) -> tuple[pd.DataFrame, pd.DataFrame]:
     dirs = sorted(d for d in exp.glob("seed*") if (d / "DONE").exists())
     if not dirs:
         raise SystemExit("완료된 seed 없음")
-    metrics = pd.concat(pd.read_csv(d / "metrics.csv") for d in dirs)
-    nmse = pd.concat(pd.read_csv(d / "nmse.csv") for d in dirs)
+    # extra_*.csv는 exp_extra.py가 나중에 추가한 조건(예: W5A5). 일부 seed에만 있을 수 있다
+    def read(name: str) -> pd.DataFrame:
+        files = [d / f for d in dirs for f in (f"{name}.csv", f"extra_{name}.csv") if (d / f).exists()]
+        return pd.concat(pd.read_csv(f) for f in files)
+
+    metrics, nmse = read("metrics"), read("nmse")
     keys = ["seed", "set", "condition", "state"]
     mean = metrics.groupby(keys, as_index=False)[["acc", "margin", "margin_drop", "c2w", "w2c"]].mean()
     mean["task"] = AVG
@@ -227,8 +231,9 @@ def main() -> None:
     cond = metrics[(metrics.state == "all") & (metrics.condition != "MIX") & (metrics.set == "test")]
     cond.to_csv(out / "conditions.csv", index=False)
     print("\n조건별 test 정답률(%)과 C→W 건수")
-    print(cond.groupby(["condition", "task"]).agg(acc=("acc", "mean"), sd=("acc", "std"), lo=("acc", "min"),
-                                                 hi=("acc", "max"), c2w=("c2w", "mean")).round(2))
+    # n은 그 조건을 돌린 seed 수. 추가 조건은 seed 수가 다를 수 있어 함께 적는다
+    print(cond.groupby(["condition", "task"]).agg(n=("acc", "size"), acc=("acc", "mean"), sd=("acc", "std"),
+                                                 lo=("acc", "min"), hi=("acc", "max"), c2w=("c2w", "mean")).round(2))
 
     table = layer_table(metrics, nmse)
     table.to_csv(out / "layers.csv", index=False)

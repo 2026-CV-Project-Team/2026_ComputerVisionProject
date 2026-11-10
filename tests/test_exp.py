@@ -2,7 +2,8 @@ import unittest
 
 import torch
 
-from src.exp_6conv import CONDITIONS, build_states, check_folding, layer_nmse
+from src.exp_6conv import CONDITIONS, build_states, check_folding, condition_states, layer_nmse
+from src.exp_extra import parse_condition
 from src.models import N_LAYERS, SixConv
 from src.quant.qmodel import FoldedSixConv, QuantTable, calibrate
 
@@ -19,6 +20,15 @@ class ExpTest(unittest.TestCase):
         self.assertEqual(by_name[("W32A4", "only_6")], ([None] * 6, [None] * 5 + [4]))
         self.assertEqual(by_name[("W6A6", "all")], ([6] * 6, [6] * 6))
         self.assertEqual(by_name[("MIX", "mix_844448")][0], [8, 4, 4, 4, 4, 8])
+
+    def test_extra_condition(self):
+        self.assertEqual(parse_condition("W5A5"), (5, 5))
+        self.assertEqual(parse_condition("W32A4"), (None, 4))
+        with self.assertRaises(SystemExit):
+            parse_condition("W3A3")  # 준비되지 않은 비트 수
+        states = condition_states("W5A5", 5, 5)
+        self.assertEqual(len(states), 1 + 2 * N_LAYERS)
+        self.assertEqual(states[1], ("W5A5", "restore_1", [None, 5, 5, 5, 5, 5], [None, 5, 5, 5, 5, 5]))
 
     def test_nmse_zero_when_off_and_fold_check(self):
         torch.manual_seed(0)

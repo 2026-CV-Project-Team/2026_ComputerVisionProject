@@ -41,6 +41,9 @@ python -m src.train --seed 0
 # 본 실험 (seed 하나에 M4 맥 기준 13분 정도, 끝난 seed는 건너뜀)
 python -m src.exp_6conv --seeds 0 1 2 3 4
 
+# 조건 추가 (학습해둔 모델 그대로 쓰고 조건만 더 돌림, seed 하나에 1분 안쪽)
+python -m src.exp_extra --conditions W5A5 --seeds 0 1 2 3 4
+
 # 결과 집계 -> results/6conv_fold/summary/
 python -m src.analyze --exp results/6conv_fold
 ```
@@ -57,6 +60,7 @@ src/
     quantizer.py  fake quantization
     qmodel.py     folding된 모델 + 층별 on/off, calibration
   exp_6conv.py    본 실험
+  exp_extra.py    조건 추가 (W5A5 등)
   analyze.py      집계 (순위 상관, mixed precision)
 tests/            단위 테스트
 docs/             실험 규격
@@ -69,7 +73,7 @@ results/          summary만 올림 (모델, 이미지별 예측은 제외)
 - 양자화: W는 symmetric per-channel, A는 asymmetric per-tensor, 둘 다 min-max. calibration 2,048장
 - BN은 folding한 다음에 양자화. Head랑 입력 이미지는 양자화 안 함
 - 층 하나 = Conv의 W + 그 블록 출력 A
-- 조건: FP32, W8A8, W6A6, W4A8, W4A4, W32A4, W4A32
+- 조건: FP32, W8A8, W6A6, W5A5, W4A8, W4A4, W32A4, W4A32 (W5A5는 나중에 추가)
 - seed 5개 (0~4). 분할은 고정이고 seed는 초기값이랑 학습 순서만 바꿈
 - 층 순위는 rank 1만 장으로 정하고, 최종 평가는 test 1만 장으로 따로 함
 
@@ -93,6 +97,7 @@ results/          summary만 올림 (모델, 이미지별 예측은 제외)
 | FP32 | 100 | - |
 | W8A8 | 100 | 틀리게 바뀐 이미지 0개 |
 | W6A6 | 100 | 틀리게 바뀐 이미지 0개 |
+| W5A5 | 98.68 ± 0.75 | 97.86 ~ 99.64 |
 | W4A32 | 89.94 ± 4.87 | 82.65 ~ 95.65 |
 | W4A8 | 89.89 ± 5.00 | 82.36 ~ 95.59 |
 | W32A4 | 85.69 ± 8.52 | 72.35 ~ 93.13 |
@@ -109,7 +114,8 @@ W4A4에서 층별로 본 것 (rank 1만 장, seed 평균)
 | Conv5 | 4.91 | 1.15 | 0.365 | 0.038 |
 | Conv6 | -0.45 | 0.00 | 1.302 | 0.082 |
 
-- 8비트, 6비트에서는 정확도가 안 변하고 4비트에서 무너짐
+- 8비트, 6비트에서는 정확도가 안 변함. 5비트부터 조금씩 틀리기 시작하고(평균 -1.3%p) 4비트에서 크게 무너짐
+  - 5비트에서 제일 많이 떨어지는 과제는 Color (96.95%), Shape은 거의 그대로 (99.91%)
 - NMSE 순위랑 복원 이득 순위가 안 맞음. 누적 NMSE 기준 ρ 평균 -0.62, 1등 층은 5개 seed 전부 다름
   - 층이 6개뿐이라 |ρ| 0.886 이상이어야 유의한데, 넘은 건 seed 1개
   - 누적 NMSE는 뒤 층일수록 앞 층 오차가 쌓여서 커지는 것도 감안해야 함

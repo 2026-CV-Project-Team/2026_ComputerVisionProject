@@ -40,7 +40,7 @@
 | A 양자화 지점 | 각 Conv의 ReLU 뒤, MaxPool이 있으면 MaxPool 뒤 | 확정 |
 | 층 단위 | Conv i의 W + 그 블록 출력 A를 한 단위로 취급 | 확정 |
 | 첫·마지막 층 | 단독·복원 실험에서는 고정 없이 같은 조건. Mixed-Precision에서 8비트 보호 전략을 따로 비교 | 확정 |
-| 정밀도 조건 | FP32, W8A8, W6A6, W4A8, W4A4, W32A4, W4A32 | 확정 |
+| 정밀도 조건 | FP32, W8A8, W6A6, W5A5, W4A8, W4A4, W32A4, W4A32. W5A5는 11-10 2차 회신으로 추가(`src/exp_extra.py`, 기존 모델·보정 범위 재사용) | 확정 |
 | folding된 bias | FP32 유지 | 잠정 (문서에 규정 없음) |
 
 ### 실험

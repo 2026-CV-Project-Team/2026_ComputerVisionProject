@@ -17,7 +17,9 @@ from __future__ import annotations
 
 import torch
 
-BITS = (4, 6, 8)  # 실험에 쓰는 비트 수. 6비트는 4와 8 사이 민감도 확인용으로 추가됨
+# 실험에 쓰는 비트 수. 6비트는 4와 8 사이 민감도 확인용으로 추가됨.
+# 5비트는 6비트(100%)와 4비트(급락) 사이에서 어디부터 무너지는지 보려고 추가(이하형 문서 11-10 2차)
+BITS = (4, 5, 6, 8)
 
 
 def weight_qparams(weight: torch.Tensor, bits: int) -> tuple[torch.Tensor, int]:
