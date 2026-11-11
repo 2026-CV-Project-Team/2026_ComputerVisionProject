@@ -9,3 +9,5 @@ results/**
 __pycache__/
 *.pyc
 .DS_Store
+# ImageNet 원본과 전처리 배열은 용량이 커서 올리지 않음 (분할 목록 data/splits/만 올림)
+data/imagenet/
