@@ -176,3 +176,101 @@ Mixed precision은 두 가지로 나눠서 봄 (서로 다른 실험)
 - Blur σ=1.0은 FP32부터 떨어지고(96.43, 주로 Scale) 양자화하면 더 떨어짐
 - 누적 NMSE 순위와 복원 이득 순위가 안 맞는 건 모든 입력에서 똑같이 나옴 (ρ 평균 -0.52 ~ -0.62, 1등 층 겹침 0)
 - 복원 이득 순위 자체는 입력이 바뀌어도 대체로 유지됨 (원본 순위와의 ρ 평균 0.77 ~ 0.99). Conv1이 계속 1등인 경우가 많음
+
+## ImageNet 사전학습 모델 (ResNet-18, DeiT-Tiny)
+
+6-Conv에서 본 결과가 실제로 많이 쓰는 모델에서도 나오는지 확인하려고 추가한 실험이다. 재학습 없이 사전학습 가중치를 그대로 쓴다. 아직 1회 측정이고 아래 "잠정" 항목은 팀에서 확정하기 전이다.
+
+### 데이터 받기
+
+Hugging Face [timm/imagenet-1k-wds](https://huggingface.co/datasets/timm/imagenet-1k-wds)를 쓴다. 페이지에서 약관에 동의하고 Read 토큰으로 로그인해야 받을 수 있다.
+
+```bash
+python -c "from huggingface_hub import login; login()"
+
+# val 묶음 받기 (약 7GB) -> data/imagenet/raw
+python -c "from huggingface_hub import snapshot_download; snapshot_download('timm/imagenet-1k-wds', repo_type='dataset', allow_patterns=['imagenet1k-validation-*.tar'], local_dir='data/imagenet/raw')"
+
+# 보정용 train 2,048장 받기, rank/test 목록 만들기, 전처리 배열 만들기
+python -m src.imagenet_data --calib --val --cache
+```
+
+`data/splits/imagenet_*.json`에 우리가 쓴 분할 목록이 들어 있어서, `--calib --val` 없이 `--cache`만 돌려도 같은 이미지를 쓸 수 있다(보정용 JPEG는 따로 받아야 함).
+
+### 실행
+
+```bash
+# FP32 기준 정확도 + 전 단위 동일 비트 조건 (12분 정도)
+python -m src.exp_imagenet
+
+# 단위별 복원·교체 실험 (조건 하나에 5~6분)
+python -m src.exp_imagenet_units --models resnet18 --conditions W4A4 W5A5
+python -m src.exp_imagenet_units --models deit_tiny --conditions W4A4 W5A5 W6A6
+```
+
+### 설정
+
+| 항목 | 내용 |
+|---|---|
+| 모델 | ResNet-18 (torchvision, IMAGENET1K_V1), DeiT-Tiny (timm `deit_tiny_patch16_224`) |
+| 데이터 | 보정 train 2,048장, rank val 5,000장, test val 10,000장 (서로 안 겹침) |
+| 단위 | ResNet-18: Stem, BasicBlock 8개, FC (10개) / DeiT-Tiny: Patch Embed, Block 12개, Head (14개) |
+| 양자화 | 단위 안의 Conv/Linear 가중치 + 단위 출력 활성값. 규칙은 6-Conv와 같음 (W 대칭 per-channel, A 비대칭 per-tensor min-max) |
+| ResNet BN | Conv에 합친 뒤 보정·양자화 |
+
+잠정으로 둔 것
+
+- 블록 안쪽의 중간 활성값은 양자화하지 않고 블록 출력만 양자화한다.
+- FC/Head는 가중치만 양자화하고 logit은 양자화하지 않는다.
+- Stem 출력은 MaxPool 뒤, Patch Embed 출력은 projection 직후로 본다.
+- rank/test는 클래스 균형으로 뽑았다 (클래스당 5장, 10장).
+- 전처리는 모델별 공식 설정을 따랐다 (ResNet-18: 256 bilinear, DeiT-Tiny: 248 bicubic, 둘 다 가운데 224).
+
+### 결과 (1회 측정)
+
+조건별 top-1 정확도 (test 10,000장, %)
+
+| 조건 | ResNet-18 | DeiT-Tiny |
+|---|---|---|
+| FP32 | 69.19 | 71.90 |
+| W8A8 | 68.94 | 71.47 |
+| W6A6 | 67.25 | 62.33 |
+| W5A5 | 58.52 | 6.75 |
+| W4A4 | 17.13 | 0.13 |
+| W4A8 | 44.28 | 64.07 |
+| W32A4 | 36.58 | 0.11 |
+| W4A32 | 44.30 | 64.36 |
+
+FP32 정확도는 알려진 수치(ResNet-18 69.8%, DeiT-Tiny 72.2%)와 거의 같다. DeiT-Tiny는 활성값을 줄였을 때 훨씬 빨리 무너진다.
+
+ResNet-18 W4A4 단위별 결과 (rank 5,000장, 전체 양자화 16.92%)
+
+| 단위 | 복원 이득 (%p) | 단독 하락 (%p) | 누적 NMSE | 단독 NMSE |
+|---|---|---|---|---|
+| stem | 18.82 | 18.08 | 0.091 | 0.091 |
+| layer1.0 | 5.62 | 5.18 | 0.250 | 0.100 |
+| layer1.1 | 4.38 | 1.90 | 0.439 | 0.091 |
+| layer2.0 | 5.04 | 4.34 | 0.710 | 0.174 |
+| layer2.1 | 4.84 | 1.06 | 0.849 | 0.150 |
+| layer3.0 | 3.14 | 1.44 | 0.876 | 0.141 |
+| layer3.1 | 3.18 | 2.44 | 1.097 | 0.214 |
+| layer4.0 | 2.18 | 1.06 | 1.370 | 0.179 |
+| layer4.1 | 0.54 | 0.20 | 1.498 | 0.205 |
+| fc | 0.64 | 0.62 | 1.171 | 0.027 |
+
+오차 순위와 복원 순위 비교 (rank 5,000장)
+
+| 모델 | 조건 | 전체 양자화 (%) | ρ (누적 NMSE vs 복원 이득) | 복원 이득 상위 3 | 누적 NMSE 상위 3 |
+|---|---|---|---|---|---|
+| ResNet-18 | W4A4 | 16.92 | -0.94 | stem, layer1.0, layer2.0 | layer4.1, layer4.0, fc |
+| ResNet-18 | W5A5 | 60.02 | -0.63 | stem, layer1.0, layer2.0 | layer4.0, layer4.1, layer3.1 |
+| DeiT-Tiny | W4A4 | 0.06 | 0.13 | (전부 0.2%p 이하) | head, block11, block10 |
+| DeiT-Tiny | W5A5 | 6.74 | 0.26 | block9, block8, block11 | head, block11, block10 |
+| DeiT-Tiny | W6A6 | 63.92 | 0.12 | block9, patch_embed, block11 | head, block11, block10 |
+
+- ResNet-18은 6-Conv와 같은 모양이다. 오차는 뒤쪽 단위가 큰데 복원 이득은 Stem이 가장 크다.
+- DeiT-Tiny는 뚜렷한 관계가 없다. W4A4에서는 단위 하나를 복원해도 회복이 안 되고, W6A6의 이득은 1%p 안팎이라 잡음과 구분이 안 된다.
+- 누적 NMSE는 뒤로 갈수록 쌓이는 값이라 깊이와 섞여 있다. 단독 NMSE로 보면 ResNet-18 W4A4의 ρ는 -0.26이다.
+- 전체 표는 `results/imagenet/summary/units.csv`, `rank_corr.csv`에 있다.
+
+아직 안 한 것: 정책 6개(Early-High, Late-High, NMSE, 단독 민감도, 복원 이득, Random)로 상위 1·2·3 단위를 8비트로 올리는 비교, test 평가.
