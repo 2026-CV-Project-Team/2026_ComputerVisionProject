@@ -23,10 +23,15 @@ BITS = (4, 5, 6, 8)
 
 
 def weight_qparams(weight: torch.Tensor, bits: int) -> tuple[torch.Tensor, int]:
-    """가중치의 (채널별 scale, q_max). scale shape은 (out_ch, 1, 1, 1)."""
+    """가중치의 (채널별 scale, q_max).
+
+    scale shape은 Conv면 (out_ch, 1, 1, 1), Linear면 (out_features, 1).
+    Linear는 출력 뉴런 하나(행 하나)를 채널 하나로 본다(ResNet의 FC, DeiT의 Linear 층용).
+    """
     q_max = 2 ** (bits - 1) - 1
     # 채널의 절댓값 최댓값이 정확히 q_max에 대응하도록 scale을 정한다
-    scale = weight.detach().abs().amax(dim=(1, 2, 3), keepdim=True) / q_max
+    dims = tuple(range(1, weight.ndim))  # 출력 채널(0번 축)을 뺀 나머지 축
+    scale = weight.detach().abs().amax(dim=dims, keepdim=True) / q_max
     return scale.clamp(min=1e-12), q_max  # 0으로 나누기 방지
 
 
