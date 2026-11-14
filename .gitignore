@@ -5,6 +5,9 @@ results/**
 !results/**/
 !results/**/summary/
 !results/**/summary/**
+# 그림은 PNG만 올림 (PDF는 src/figures.py로 다시 만들 수 있음)
+!results/**/figures/
+!results/**/figures/*.png
 .venv/
 __pycache__/
 *.pyc

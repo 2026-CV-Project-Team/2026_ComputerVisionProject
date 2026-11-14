@@ -49,6 +49,9 @@ python -m src.exp_domain --seeds 0 1 2 3 4
 
 # 결과 집계 -> results/6conv_fold/summary/
 python -m src.analyze --exp results/6conv_fold
+
+# 그림 -> results/6conv_fold/figures/ (집계 CSV만 읽음)
+python -m src.figures --exp results/6conv_fold
 ```
 
 ## 폴더
@@ -66,9 +69,10 @@ src/
   exp_extra.py    조건 추가 (W5A5 등)
   exp_domain.py   도메인 실험 1차 (배경, noise, blur)
   analyze.py      집계 (순위 상관, mixed precision, Pareto)
+  figures.py      그림
 tests/            단위 테스트
 docs/             실험 규격
-results/          summary만 올림 (모델, 이미지별 예측은 제외)
+results/          summary랑 그림 PNG만 올림 (모델, 이미지별 예측은 제외)
 ```
 
 ## 실험 설정 (6-Conv)
@@ -107,6 +111,8 @@ results/          summary만 올림 (모델, 이미지별 예측은 제외)
 | W32A4 | 85.69 ± 8.52 | 72.35 ~ 93.13 |
 | W4A4 | 58.31 ± 13.16 | 43.71 ~ 71.76 |
 
+![비트 수별 정확도](results/6conv_fold/figures/fig1_bits.png)
+
 W4A4에서 층별로 본 것 (rank 1만 장, seed 평균)
 
 | 층 | 복원 이득(%p) | 단독 하락(%p) | 누적 NMSE | 단독 NMSE |
@@ -117,6 +123,10 @@ W4A4에서 층별로 본 것 (rank 1만 장, seed 평균)
 | Conv4 | 12.74 | 2.94 | 0.235 | 0.038 |
 | Conv5 | 4.91 | 1.15 | 0.365 | 0.038 |
 | Conv6 | -0.45 | 0.00 | 1.302 | 0.082 |
+
+![층별 결과](results/6conv_fold/figures/fig2_layers.png)
+
+검은 점은 seed 하나씩. (d)는 누적 NMSE 순위랑 복원 이득 순위를 seed별로 찍은 것이고, 대각선 위에 있어야 두 순위가 같은 것.
 
 - 8비트, 6비트에서는 정확도가 안 변함. 5비트부터 조금씩 틀리기 시작하고(평균 -1.3%p) 4비트에서 크게 무너짐
   - 5비트에서 제일 많이 떨어지는 과제는 Color (96.95%), Shape은 거의 그대로 (99.91%)
@@ -152,6 +162,8 @@ Mixed precision은 두 가지로 나눠서 봄 (서로 다른 실험)
 | 884884 | 5.69 | 98.94 ± 1.27 |
 | 888884 | 5.95 | 100.00 |
 
+![Pareto](results/6conv_fold/figures/fig3_pareto.png)
+
 - frontier가 거의 "앞 층부터 8비트"임. 앞 층은 가중치 수가 적어서 싸고, 복원 이득도 커서 그런 것
 - 그래서 비트 예산을 평균 5, 6으로 맞추면 어떤 순위를 쓰든 같은 조합(888844, 888884)이 나옴. 점수를 비용으로 나눠서 골라도 마찬가지
 - 예산 7에서는 NMSE 순위만 Conv6을 먼저 골라서 100%가 안 됨 (98.9%)
@@ -168,6 +180,8 @@ Mixed precision은 두 가지로 나눠서 봄 (서로 다른 실험)
 | Noise σ=0.03 | 99.78 | 99.69 | 98.01 | 84.11 | 79.80 | 69.69 | 47.06 |
 | Blur σ=0.5 | 100 | 100 | 100 | 98.18 | 89.14 | 82.61 | 56.76 |
 | Blur σ=1.0 | 96.43 | 96.47 | 95.72 | 85.42 | 71.43 | 65.99 | 44.93 |
+
+![도메인](results/6conv_fold/figures/fig4_domain.png)
 
 - 배경만 바꾼 건 차이 없음. 근데 지금 모델은 벽, 바닥 색을 학습 때 전부 봤기 때문에 이건 분포 변화 실험은 아님 (그건 색 조합을 빼고 다시 학습해야 해서 2차로 미룸)
 - Noise σ=0.03은 FP32에서는 거의 안 떨어지는데(99.78) 비트가 낮을수록 많이 떨어짐. W6A6 98.01, W5A5 84.11

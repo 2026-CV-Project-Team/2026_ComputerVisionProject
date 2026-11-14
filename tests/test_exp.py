@@ -1,4 +1,6 @@
+import tempfile
 import unittest
+from pathlib import Path
 
 import numpy as np
 import torch
@@ -61,6 +63,19 @@ class ExpTest(unittest.TestCase):
         mid = torch.full((1, 3, 64, 64), 0.5)
         d1, d3 = make_domain("noise_0.01", mid, mid), make_domain("noise_0.03", mid, mid)
         self.assertTrue(torch.allclose(d3, 3 * d1, atol=1e-6))
+
+    def test_figures(self):
+        # 레포에 올라가 있는 집계 CSV로 그림이 전부 만들어지는지만 확인
+        from src import figures
+
+        summary = Path(__file__).resolve().parent.parent / "results" / "6conv_fold" / "summary"
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            for draw in (figures.fig1_bits, figures.fig2_layers, figures.fig3_pareto,
+                         figures.fig4_domain, figures.fig5_gain3d):
+                draw(summary, out)
+            self.assertEqual(len(list(out.glob("*.png"))), 5)
+            self.assertEqual(len(list(out.glob("*.pdf"))), 5)
 
     def test_nmse_zero_when_off_and_fold_check(self):
         torch.manual_seed(0)
