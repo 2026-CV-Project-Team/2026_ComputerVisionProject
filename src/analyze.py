@@ -50,6 +50,8 @@ PARAMS = np.array([IN_CH[i] * CHANNELS[i] * 9 for i in range(N_LAYERS)])
 AVG = "mean3"  # 세 과제 평균을 나타내는 가상의 과제 이름
 BUDGET_BITS = (5, 6, 7)  # 평균 가중치 비트 예산(잠정)
 TOP_K = (1, 2, 3)
+# output_summary.py가 층 표에 붙이는 최종 출력 오차 열 -> Mixed 정책 이름
+OUT_SCORES = {"out_gain": "최종 출력 NMSE 감소 순위", "out_kl_gain": "최종 출력 KL 감소 순위"}
 
 
 def load(exp: Path) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -199,6 +201,10 @@ def mixed(metrics: pd.DataFrame, table: pd.DataFrame) -> pd.DataFrame:
             "단독 하락 순위": g.drop_pp.to_numpy(),
             "앞층부터": -np.arange(N_LAYERS, dtype=float),  # 순위 정보 없이 고르는 기준선
         }
+        # 최종 출력 오차 기준(output_summary가 열을 붙여서 부를 때만). 정답 라벨 없이 잴 수 있는 기준이다
+        for col, name in OUT_SCORES.items():
+            if col in g:
+                scores[name] = g[col].to_numpy()
         orders = {name: np.argsort(-score, kind="stable") for name, score in scores.items()}
         add(seed, "기준", "전 층 4비트", (4,) * N_LAYERS)
         add(seed, "기준", "전 층 8비트", (8,) * N_LAYERS)

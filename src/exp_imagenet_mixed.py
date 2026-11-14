@@ -7,6 +7,8 @@
 - drop:   단독 양자화 시 정확도 하락이 큰 순서 (단독 민감도)
 - gain:   FP32 복원 이득이 큰 순서
 - random: 무작위 (seed 여러 개의 평균)
+- out:    단위를 FP32로 되돌렸을 때 최종 출력(logit) NMSE가 많이 줄어드는 순서 (exp_imagenet_output)
+- out_kl: 같은 것을 KL(softmax) 기준으로. out, out_kl은 정답 라벨 없이 잴 수 있는 기준이다
 
 나머지 단위는 기준 비트(예: W4A4)를 유지하고, 고른 단위는 W8A8로 올린다.
 순위는 rank 5,000장 결과(summary/units.csv)에서만 정하고, 고른 조합을 rank와 test 모두에서 평가한다.
@@ -37,6 +39,7 @@ from .quant.units import UnitQuantizer
 HIGH = 8  # 승격 비트
 KS = (1, 2, 3)
 RANDOM_SEEDS = range(5)
+POLICIES = ("early", "late", "nmse", "drop", "gain", "out", "out_kl")
 
 
 def choose(policy: str, table: pd.DataFrame, k: int, seed: int = 0) -> list[int]:
@@ -48,13 +51,13 @@ def choose(policy: str, table: pd.DataFrame, k: int, seed: int = 0) -> list[int]
         return list(range(n - k, n))
     if policy == "random":
         return sorted(np.random.default_rng(seed).choice(n, k, replace=False).tolist())
-    column = {"nmse": "nmse_all", "drop": "drop_pp", "gain": "gain_pp"}[policy]
+    column = {"nmse": "nmse_all", "drop": "drop_pp", "gain": "gain_pp", "out": "out_gain", "out_kl": "out_kl_gain"}[policy]
     # 값이 같으면 앞쪽 단위를 우선(stable 정렬)해서 결과가 실행마다 달라지지 않게 한다
     order = np.argsort(-table[column].to_numpy(), kind="stable")
     return sorted(order[:k].tolist())
 
 
-def run(name: str, bases: list[str], units_table: pd.DataFrame, device) -> list[dict]:
+def run(name: str, bases: list[str], units_table: pd.DataFrame, device, policies=POLICIES) -> list[dict]:
     model, units = load_model(name)
     model.to(device)
     q = UnitQuantizer(model, units)
@@ -68,12 +71,14 @@ def run(name: str, bases: list[str], units_table: pd.DataFrame, device) -> list[
         wb, ab = parse_condition(base)
         table = units_table[(units_table.model == name) & (units_table.condition == base)].reset_index(drop=True)
         assert list(table.unit) == [u.name for u in units], f"{name} {base}: units.csv에 단위별 결과가 없음"
-        plans = [("base", 0, 0, [])]
+        plans = [("base", 0, 0, [])] if "base" in policies else []
         for k in KS:
-            for policy in ("early", "late", "nmse", "drop", "gain"):
-                plans.append((policy, k, 0, choose(policy, table, k)))
-            for seed in RANDOM_SEEDS:
-                plans.append(("random", k, seed, choose("random", table, k, seed)))
+            for policy in policies:
+                if policy not in ("base", "random"):
+                    plans.append((policy, k, 0, choose(policy, table, k)))
+            if "random" in policies:
+                for seed in RANDOM_SEEDS:
+                    plans.append(("random", k, seed, choose("random", table, k, seed)))
         cache: dict[tuple, dict[str, float]] = {}  # 같은 조합은 한 번만 평가
         for policy, k, seed, picked in plans:
             key = tuple(picked)
@@ -103,18 +108,23 @@ def main() -> None:
     p.add_argument("--models", nargs="+", default=list(MODELS))
     p.add_argument("--bases", nargs="+", default=["W4A4"])
     p.add_argument("--out", default="results/imagenet")
+    # 일부 정책만 다시 돌릴 때. 예: --policies out out_kl (나머지 정책의 기존 행은 그대로 둔다)
+    p.add_argument("--policies", nargs="+", default=["base", "random", *POLICIES])
     args = p.parse_args()
     summary = ROOT / args.out / "summary"
     units_table = pd.read_csv(summary / "units.csv")
+    if (summary / "output_units.csv").exists():  # out, out_kl 정책용 열
+        out = pd.read_csv(summary / "output_units.csv")[["model", "condition", "unit", "out_gain", "out_kl_gain"]]
+        units_table = units_table.merge(out, on=["model", "condition", "unit"], how="left")
     rows = []
     for name in args.models:
-        rows += run(name, args.bases, units_table, pick_device())
+        rows += run(name, args.bases, units_table, pick_device(), args.policies)
     new = pd.DataFrame(rows)
     path = summary / "mixed_topk_all.csv"
-    if path.exists():  # 모델·기준을 나눠 실행해도 이전 행이 남도록 합친다
+    if path.exists():  # 모델·기준·정책을 나눠 실행해도 이전 행이 남도록 합친다
         old = pd.read_csv(path)
-        keys = set(zip(new.model, new.base))
-        old = old[[(m, b) not in keys for m, b in zip(old.model, old.base)]]
+        keys = set(zip(new.model, new.base, new.policy))
+        old = old[[(m, b, q) not in keys for m, b, q in zip(old.model, old.base, old.policy)]]
         new = pd.concat([old, new], ignore_index=True)
     new.to_csv(path, index=False)
     # 정책별 요약: random은 seed 평균과 표준편차

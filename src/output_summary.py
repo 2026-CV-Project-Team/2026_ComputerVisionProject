@@ -9,6 +9,8 @@
     out_nmse_only    = 층 i만 양자화했을 때의 최종 출력 오차
     out_kl_*         = 같은 내용을 KL(softmax) 기준으로
 - output_rank_corr.csv:  seed·조건·과제별 Spearman ρ (아래 PAIRS)
+- output_mixed.csv:      analyze.py의 mixed.csv에 최종 출력 오차 기준 정책 2개를 더한 것
+                         (64조합은 이미 전부 평가돼 있어서 새로 돌리지 않고 골라서 찾기만 함)
 
 ImageNet 출력 (results/imagenet/summary/)
 - output_conditions.csv, output_units.csv, output_rank_corr.csv: 위와 같은 형식(seed 대신 model)
@@ -25,7 +27,7 @@ import numpy as np
 import pandas as pd
 from scipy.stats import spearmanr
 
-from .analyze import AVG, LAYERS, layer_table, load, overlap
+from .analyze import AVG, LAYERS, layer_table, load, mixed, overlap
 
 # (x, y): x 순위가 y 순위를 얼마나 맞히는지
 PAIRS = [
@@ -88,6 +90,8 @@ def six_conv(exp: Path) -> None:
     table.to_csv(summary / "output_layers.csv", index=False)
     corr = corr_rows(table, ["seed", "condition", "task"], "layer")
     corr.to_csv(summary / "output_rank_corr.csv", index=False)
+    mix = mixed(metrics, table)
+    mix.to_csv(summary / "output_mixed.csv", index=False)
 
     pd.set_option("display.width", 220, "display.max_columns", 30)
     print("\n[6-Conv] 조건별 최종 출력 오차 (test, 세 과제 평균, seed 평균)")
@@ -100,6 +104,9 @@ def six_conv(exp: Path) -> None:
     print("W4A4 전 층 양자화 최종 출력 NMSE:", round(sub.out_nmse_all.mean(), 4))
     print("\n[6-Conv] 순위 상관 (세 과제 평균 기준, seed 평균)")
     print(corr[corr.task == AVG].groupby(["condition", "x", "y"])[["rho", "top1", "top3"]].mean().round(2))
+    print("\n[6-Conv] Mixed 정책 (test 정답률 %, 세 과제 평균, seed 평균)")
+    view = mix[mix.rule.str.startswith(("top", "budget"))]
+    print(view.pivot_table(index="policy", columns="rule", values="test_acc", sort=False).round(2))
 
 
 def imagenet(root: Path) -> None:
