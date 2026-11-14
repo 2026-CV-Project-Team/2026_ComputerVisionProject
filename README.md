@@ -1,4 +1,4 @@
-# 2026 Computer Vision Project
+# Layerwise Quantization Error and Accuracy Recovery in Image Classifiers
 
 층별 양자화 오차 vs FP32 복원 효과
 
