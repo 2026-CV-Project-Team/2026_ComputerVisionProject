@@ -109,7 +109,8 @@ def imagenet(root: Path) -> None:
         return
     summary = root / "summary"
     units = pd.concat([pd.read_csv(f) for f in files], ignore_index=True)
-    cond_files = sorted(root.glob("*/output_conditions.csv"))
+    # summary/ 안의 집계 파일까지 다시 읽어 행이 중복되지 않도록 모델 폴더만 본다
+    cond_files = sorted(f for f in root.glob("*/output_conditions.csv") if f.parent.name != "summary")
     if cond_files:
         pd.concat(pd.read_csv(f) for f in cond_files).to_csv(summary / "output_conditions.csv", index=False)
     # 기존 단위별 표(units.csv)의 복원 이득·단독 하락·층 NMSE를 붙인다
